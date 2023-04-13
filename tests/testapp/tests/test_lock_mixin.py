@@ -1,9 +1,16 @@
 import unittest
 
 import django
+from django.dispatch import receiver
 from django.db import models
 from django.test import TestCase
-from django_fsm import FSMField, ConcurrentTransitionMixin, ConcurrentTransition, transition
+from django_fsm import (
+    FSMField,
+    ConcurrentTransitionMixin,
+    ConcurrentTransition,
+    transition,
+)
+from django_fsm.signals import post_transition
 
 
 class LockedBlogPost(ConcurrentTransitionMixin, models.Model):
@@ -32,6 +39,29 @@ class ExtendedBlogPost(LockedBlogPost):
 
     class Meta:
         app_label = "testapp"
+
+
+class BlogPostWithPostTransitionHandler(LockedBlogPost):
+    review_state = FSMField(default="new", protected=True)
+    notes = models.CharField(max_length=50)
+
+    @transition(field=review_state, source="new", target="waiting")
+    def submit(self):
+        pass
+
+    @transition(field=review_state, source="waiting", target="published")
+    def skip_review(self):
+        pass
+
+    class Meta:
+        app_label = "testapp"
+
+
+@receiver(post_transition, sender=BlogPostWithPostTransitionHandler)
+def handle_post_transition(sender, instance, name, source, target, **kwargs):
+    if target == "waiting":
+        instance.skip_review()
+        # instance.save()
 
 
 class TestLockMixin(TestCase):
@@ -101,3 +131,9 @@ class TestLockMixin(TestCase):
         post2.refresh_from_db()
         post2.remove()
         post2.save()
+
+    def test_post_transition_calling_another_transition(self):
+        post = BlogPostWithPostTransitionHandler.objects.create()
+        post.submit()
+        post.save()
+        self.assertEqual("published", post.review_state)
